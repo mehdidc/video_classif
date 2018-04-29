@@ -1,9 +1,28 @@
 import torch.utils.data as data
 from PIL import Image
 from torchvision.datasets import folder
-
+from collections import defaultdict
+import numpy as np
 import os
 import os.path
+
+class BalancedSample:
+    
+    def __init__(self, dataset, seed=None):
+        self.rng = np.random.RandomState(seed)
+        self.dataset = dataset
+        self.class_indices = dataset.class_indices
+        self.classes = dataset.classes
+        self.idx_to_class = dataset.idx_to_class
+
+    def __getitem__(self, idx):
+        cl = self.rng.randint(0, len(self.class_indices) - 1)
+        idx = self.rng.choice(self.class_indices[cl])
+        return self.dataset[idx]
+
+    def __len__(self):
+        return len(self.dataset)
+
 
 class ImageFolder(folder.ImageFolder):
     # The same ImageFolder of torchvision but works correctly for the structure
@@ -15,11 +34,10 @@ class ImageFolder(folder.ImageFolder):
         classes, class_to_idx = folder.find_classes(root)
         idx_to_class = {i: cl for cl, i in class_to_idx.items()}
         extensions = folder.IMG_EXTENSIONS
-        samples = make_dataset(root, class_to_idx, extensions)
+        samples, class_indices = make_dataset(root, class_to_idx, extensions)
         if len(samples) == 0:
             raise(RuntimeError("Found 0 files in subfolders of: " + root + "\n"
                                "Supported extensions are: " + ",".join(extensions)))
-
         self.root = root
         self.loader = loader
         self.extensions = extensions
@@ -33,11 +51,13 @@ class ImageFolder(folder.ImageFolder):
         self.target_transform = target_transform
 
         self.imgs = self.samples
-        
+        self.class_indices = class_indices
         self.num_inputs = 1
         self.num_targets = 1
+
 def make_dataset(dir, class_to_idx, extensions):
     images = []
+    class_indices = defaultdict(list)
     dir = os.path.expanduser(dir)
     for target in sorted(os.listdir(dir)):
         d = os.path.join(dir, target)
@@ -51,8 +71,8 @@ def make_dataset(dir, class_to_idx, extensions):
                     fpath = os.path.join(dpath, fname)
                     if folder.is_image_file(fpath):
                         item = (fpath, class_to_idx[target])
+                        class_indices[class_to_idx[target]].append(len(images))
                         images.append(item)
-
-    return images
+    return images, class_indices
 
 

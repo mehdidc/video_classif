@@ -17,9 +17,9 @@ import torchvision.transforms as transforms
 import torch.backends.cudnn as cudnn
 from torch.autograd import Variable
 
-from folder import ImageFolder
-
+from folder import ImageFolder, BalancedSample
 import visdom
+from joblib import Parallel, delayed
 
 cudnn.benchmark = True
 
@@ -72,7 +72,7 @@ def generate_splits(folder='data', pattern='*.mp4', ratio_train=0.7, ratio_valid
 
 
 def train_2d(*, folder='data', resume=False, lr=0.001, use_visdom=False): 
-    batch_size = 64
+    batch_size = 32
     test_batch_size = 32
     num_epoch = 20
 
@@ -99,6 +99,7 @@ def train_2d(*, folder='data', resume=False, lr=0.001, use_visdom=False):
         os.path.join(folder, 'frames', 'train'),
         transform=train_transform
     )
+    train_dataset = BalancedSample(train_dataset)
     valid_dataset = ImageFolder(
         os.path.join(folder, 'frames', 'valid'),
         transform=valid_transform
@@ -114,19 +115,24 @@ def train_2d(*, folder='data', resume=False, lr=0.001, use_visdom=False):
     num_classes = len(train_dataset.classes)
     print('Number of classes : {}'.format(num_classes))
 
-    train_loader = DataLoader(train_dataset, shuffle=True, batch_size=batch_size)
-    valid_loader = DataLoader(valid_dataset, batch_size=test_batch_size)
+    train_loader = DataLoader(train_dataset, shuffle=True, batch_size=batch_size, num_workers=4)
+    valid_loader = DataLoader(valid_dataset, batch_size=test_batch_size, num_workers=4)
     
     if resume:
         model = torch.load('model.th')
     else:
-        model = models.resnet50(pretrained=True)
+        model_name = 'vgg16'
+        model_build = getattr(models, model_name)
+        model = model_build(pretrained=True)
+        fc = 'fc' if hasattr(model, 'fc') else 'classifier'
+        model_fc = getattr(model, fc)
+        nb = len(model_fc._modules)
+        l = model_fc[nb - 1]
+        model_fc._modules[str(nb - 1)] = nn.Linear(l.in_features, num_classes)
+        print(model)
         model.idx_to_class = train_dataset.idx_to_class
         model.transform = valid_transform
-        model.fc = nn.Sequential(
-            nn.Linear(2048, num_classes),
-        )
-    
+   
     optimizer = torch.optim.SGD(model.parameters(), lr=lr)
     crit = nn.CrossEntropyLoss()
     
@@ -161,7 +167,14 @@ def train_2d(*, folder='data', resume=False, lr=0.001, use_visdom=False):
             acc = compute_accuracy(ypred, y)
             avg_loss = gamma * avg_loss + (1 - gamma) * loss.data[0]
             avg_acc = gamma * avg_acc + (1 - gamma) * acc.data[0]
-            print('Epoch {:03d}/{:03d} Batch {:05d}/{:05d} AvgTrainLoss : {:.4f} AvgTrainAcc : {:.4f}'.format(epoch + 1, num_epoch, batch, len(train_loader), avg_loss, avg_acc))
+            print('Epoch {:03d}/{:03d} Batch {:05d}/{:05d} AvgTrainLoss : {:.4f} AvgTrainAcc : {:.4f}'.format(
+                epoch + 1, 
+                num_epoch, 
+                batch, 
+                len(train_loader), 
+                avg_loss, 
+                avg_acc)
+            )
             if use_visdom:
                 viz.line(X=np.array([nb_updates]), Y=np.array([loss.data[0]]), win=loss_window, update='append')
                 viz.line(X=np.array([nb_updates]), Y=np.array([acc.data[0]]), win=acc_window, update='append')
@@ -174,7 +187,13 @@ def train_2d(*, folder='data', resume=False, lr=0.001, use_visdom=False):
             torch.save(model, 'model.th')
 
         print('Epoch {:03d}/{:03d} AvgTrainLoss : {:.4f} AvgTrainAcc : {:.4f} AvgValidLoss : {:.4f} AvgValidAcc : {:.4f}'.format(
-            epoch + 1, num_epoch, avg_loss, avg_acc, valid_loss, valid_acc))
+            epoch + 1, 
+            num_epoch, 
+            avg_loss, 
+            avg_acc, 
+            valid_loss, 
+            valid_acc)
+        )
         if use_visdom:
             viz.line(X=np.array([epoch]), Y=np.array([valid_loss]), win=valid_loss_window, update='append')
             viz.line(X=np.array([epoch]), Y=np.array([valid_acc]), win=valid_acc_window, update='append')
@@ -197,13 +216,11 @@ def validate(model, loader):
         accs.append(acc.data[0])
     return np.mean(losses), np.mean(accs)
 
-def annotate_full(video_path, model='model.th'):
+
+def predict(video_path, model='model.th'):
     # annotate the full video with a single label
     model = torch.load(model)
     idx_to_class = model.idx_to_class
-    #classes = sorted(os.listdir('data/videos/full'))
-    #idx_to_class = {i: cl for i, cl in enumerate(classes)}
-    
     try:
         shutil.rmtree('.cache')
     except FileNotFoundError:
@@ -214,7 +231,7 @@ def annotate_full(video_path, model='model.th'):
         '.cache/',
         transform=model.transform,
     )
-    loader = DataLoader(dataset, batch_size=32)
+    loader = DataLoader(dataset, batch_size=32, num_workers=4)
     ypred_list = []
     for X, _ in loader:
         X = Variable(X)
@@ -227,15 +244,13 @@ def annotate_full(video_path, model='model.th'):
     yind = int(yind)
     print(idx_to_class[yind])
 
-def annotate_frames(video_path, model='model.th', out='video.mp4'):
+
+def predict_frames(video_path, model='model.th', out='video.mp4'):
     # annotate all frames with text and generate a video containing
     # the annotations
     
     model = torch.load(model)
-    
     idx_to_class = model.idx_to_class
-    #classes = sorted(os.listdir('data/videos/full'))
-    #idx_to_class = {i: cl for i, cl in enumerate(classes)}
     model.eval()
     try:
         shutil.rmtree('.cache')
@@ -249,7 +264,7 @@ def annotate_frames(video_path, model='model.th', out='video.mp4'):
         '.cache/',
         transform=model.transform,
     )
-    loader = DataLoader(dataset, batch_size=32)
+    loader = DataLoader(dataset, batch_size=32, num_workers=4)
     ypred_list = []
     print('Predicting frames...')
     for i, (X, _) in enumerate(loader):
@@ -260,7 +275,7 @@ def annotate_frames(video_path, model='model.th', out='video.mp4'):
         ypred = nn.Softmax(dim=1)(ypred)
         ypred_list.append(ypred.cpu().data)
     ypred = torch.cat(ypred_list, 0)
-    pred_bs = 1 
+    pred_bs = 4 
     for i in range(0, len(ypred), pred_bs):
         yb = ypred[i:i+pred_bs]
         m = yb.mean(0, keepdim=True)
@@ -268,20 +283,28 @@ def annotate_frames(video_path, model='model.th', out='video.mp4'):
         ypred[i:i+pred_bs] = m.repeat(yb.size(0), 1)
     _, yind = ypred.max(1)
     print('Putting text into images...')
+    
+    paths = []
+    texts = []
     for i, name in enumerate(sorted(os.listdir(folder))):
         path = os.path.join(folder, name)
-        name = idx_to_class[int(yind[i])]
-        im = imread(path)
-        text = name
-        text_x, text_y = 50, 50
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        font_scale = 1
-        text_color = (255, 255, 255)
-        im = cv2.putText(im, text, (text_x, text_y), font, font_scale, text_color, 2, cv2.LINE_AA)
-        imsave(path, im)
+        paths.append(path)
+        text = idx_to_class[int(yind[i])]
+        texts.append(text)
+    Parallel(n_jobs=8)(delayed(_put_text_in_image)(path, text) for path, text in zip(paths, texts))
     print('Generating the resulting video...')
     _generate_video_from_frames(os.path.join(folder, 'image_%05d.jpg'), out)
 
 
+def _put_text_in_image(filename, text):
+    im = imread(filename)
+    text_x, text_y = 50, 50
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = 1
+    text_color = (255, 255, 255)
+    im = cv2.putText(im, text, (text_x, text_y), font, font_scale, text_color, 2, cv2.LINE_AA)
+    imsave(filename, im)
+
+
 if __name__ == '__main__':
-    run([generate_frames, generate_splits, train_2d, annotate_full, annotate_frames])
+    run([generate_frames, generate_splits, train_2d, predict, predict_frames])
