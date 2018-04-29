@@ -13,6 +13,7 @@ class ImageFolder(folder.ImageFolder):
     def __init__(self, root, transform=None, target_transform=None, loader=folder.default_loader): 
         
         classes, class_to_idx = folder.find_classes(root)
+        idx_to_class = {i: cl for cl, i in class_to_idx.items()}
         extensions = folder.IMG_EXTENSIONS
         samples = make_dataset(root, class_to_idx, extensions)
         if len(samples) == 0:
@@ -25,6 +26,7 @@ class ImageFolder(folder.ImageFolder):
 
         self.classes = classes
         self.class_to_idx = class_to_idx
+        self.idx_to_class = idx_to_class
         self.samples = samples
 
         self.transform = transform
