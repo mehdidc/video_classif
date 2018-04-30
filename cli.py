@@ -73,7 +73,7 @@ def generate_splits(folder='data', pattern='*.mp4', ratio_train=0.7, ratio_valid
 
 def train_2d(*, folder='data', resume=False, lr=0.001, use_visdom=False): 
     batch_size = 32
-    test_batch_size = 32
+    test_batch_size = 16 
     num_epoch = 20
 
     normalize = transforms.Normalize(
@@ -99,7 +99,7 @@ def train_2d(*, folder='data', resume=False, lr=0.001, use_visdom=False):
         os.path.join(folder, 'frames', 'train'),
         transform=train_transform
     )
-    train_dataset = BalancedSample(train_dataset)
+    #train_dataset = BalancedSample(train_dataset)
     valid_dataset = ImageFolder(
         os.path.join(folder, 'frames', 'valid'),
         transform=valid_transform
@@ -125,17 +125,21 @@ def train_2d(*, folder='data', resume=False, lr=0.001, use_visdom=False):
         model_build = getattr(models, model_name)
         model = model_build(pretrained=True)
         fc = 'fc' if hasattr(model, 'fc') else 'classifier'
-        model_fc = getattr(model, fc)
-        nb = len(model_fc._modules)
-        l = model_fc[nb - 1]
-        model_fc._modules[str(nb - 1)] = nn.Linear(l.in_features, num_classes)
+        if fc == 'fc':
+            model.fc = nn.Linear(2048, num_classes)
+        else:
+            model_fc = getattr(model, fc)
+            nb = len(model_fc._modules)
+            l = model_fc[nb - 1]
+            model_fc._modules[str(nb - 1)] = nn.Linear(l.in_features, num_classes)
         print(model)
         model.idx_to_class = train_dataset.idx_to_class
         model.transform = valid_transform
    
     optimizer = torch.optim.SGD(model.parameters(), lr=lr)
     crit = nn.CrossEntropyLoss()
-    
+    print(train_dataset.idx_to_class)
+    print(train_dataset.class_freq)
     model = model.cuda()
     crit = crit.cuda()
     if use_visdom:
@@ -275,7 +279,7 @@ def predict_frames(video_path, model='model.th', out='video.mp4'):
         ypred = nn.Softmax(dim=1)(ypred)
         ypred_list.append(ypred.cpu().data)
     ypred = torch.cat(ypred_list, 0)
-    pred_bs = 4 
+    pred_bs = 8
     for i in range(0, len(ypred), pred_bs):
         yb = ypred[i:i+pred_bs]
         m = yb.mean(0, keepdim=True)
@@ -290,6 +294,7 @@ def predict_frames(video_path, model='model.th', out='video.mp4'):
         path = os.path.join(folder, name)
         paths.append(path)
         text = idx_to_class[int(yind[i])]
+        print(text)
         texts.append(text)
     Parallel(n_jobs=8)(delayed(_put_text_in_image)(path, text) for path, text in zip(paths, texts))
     print('Generating the resulting video...')

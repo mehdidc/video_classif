@@ -14,6 +14,7 @@ class BalancedSample:
         self.class_indices = dataset.class_indices
         self.classes = dataset.classes
         self.idx_to_class = dataset.idx_to_class
+        self.class_freq = dataset.class_freq
 
     def __getitem__(self, idx):
         cl = self.rng.randint(0, len(self.class_indices) - 1)
@@ -34,7 +35,7 @@ class ImageFolder(folder.ImageFolder):
         classes, class_to_idx = folder.find_classes(root)
         idx_to_class = {i: cl for cl, i in class_to_idx.items()}
         extensions = folder.IMG_EXTENSIONS
-        samples, class_indices = make_dataset(root, class_to_idx, extensions)
+        samples, class_indices, class_freq = make_dataset(root, class_to_idx, extensions)
         if len(samples) == 0:
             raise(RuntimeError("Found 0 files in subfolders of: " + root + "\n"
                                "Supported extensions are: " + ",".join(extensions)))
@@ -44,6 +45,7 @@ class ImageFolder(folder.ImageFolder):
 
         self.classes = classes
         self.class_to_idx = class_to_idx
+        self.class_freq = class_freq
         self.idx_to_class = idx_to_class
         self.samples = samples
 
@@ -55,10 +57,12 @@ class ImageFolder(folder.ImageFolder):
         self.num_inputs = 1
         self.num_targets = 1
 
+
 def make_dataset(dir, class_to_idx, extensions):
     images = []
     class_indices = defaultdict(list)
     dir = os.path.expanduser(dir)
+    class_freq = defaultdict(int)
     for target in sorted(os.listdir(dir)):
         d = os.path.join(dir, target)
         if not os.path.isdir(d):
@@ -71,8 +75,9 @@ def make_dataset(dir, class_to_idx, extensions):
                     fpath = os.path.join(dpath, fname)
                     if folder.is_image_file(fpath):
                         item = (fpath, class_to_idx[target])
+                        class_freq[class_to_idx[target]] += 1
                         class_indices[class_to_idx[target]].append(len(images))
                         images.append(item)
-    return images, class_indices
+    return images, class_indices, class_freq
 
 
